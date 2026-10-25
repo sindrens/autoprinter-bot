@@ -1,0 +1,15 @@
+# Secrets and private data: never on GitHub
+.env
+data.json
+data.json.tmp
+backups/
+assets/attachments/
+snapshot.json
+logs/
+relay.txt
+# Python
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+library/
