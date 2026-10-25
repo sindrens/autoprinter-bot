@@ -153,7 +153,7 @@ class Releases(commands.Cog):
         try:
             props = read_props()
         except FileNotFoundError:
-            return f"Mod repo not found at {REPO}."
+            return "Releases come from the developer's Mac (sync.py)."
         version, mc = props.get("mod_version", ""), props.get("minecraft_version", "")
         current = DATA.get("release", {}).get("version", "0")
         if vkey(version) <= vkey(current):

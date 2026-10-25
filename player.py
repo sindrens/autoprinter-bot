@@ -314,6 +314,7 @@ class Player(commands.Cog):
         r.add_get(f"/api/{API_VERSION}/schematics", self.h_schematics)
         r.add_get(f"/api/{API_VERSION}/schematics/{{sid}}/file", self.h_schematic_file)
         r.add_post(f"/api/{API_VERSION}/build-schematic", self.h_build_schematic)
+        r.add_post(f"/api/{API_VERSION}/admin/release", self.h_admin_release)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         await web.TCPSite(self.runner, API_HOST, API_PORT).start()
@@ -932,6 +933,30 @@ class Player(commands.Cog):
         except ValueError:
             return web.json_response({"ok": False, "error": "too big"}, status=413)
         return web.json_response({"ok": True})
+
+    async def h_admin_release(self, request):
+        """The developer's Mac sends a new version here (sync.py), so releases work with the bot on the droplet."""
+        key = env("ADMIN_KEY", "")
+        if not key or request.headers.get("X-Admin-Key") != key:
+            raise web.HTTPUnauthorized(text="no")
+        import base64
+        b = await self.body(request)
+        rel = self.bot.get_cog("Releases")
+        version = str(b.get("version", ""))
+        if not rel or not version:
+            return web.json_response({"ok": False}, status=400)
+        from releases import vkey
+        if vkey(version) <= vkey(DATA.get("release", {}).get("version", "0")):
+            return web.json_response({"ok": True, "skipped": "already out"})
+        if rel.busy:
+            return web.json_response({"ok": False, "error": "busy"}, status=409)
+        rel.busy = True
+        try:
+            card = base64.b64decode(b["card"]) if b.get("card") else None
+            await rel.publish(version, base64.b64decode(b["jar"]), b["filename"], b["lines"], b.get("props") or {}, image=card)
+        finally:
+            rel.busy = False
+        return web.json_response({"ok": True, "released": version})
 
     async def h_vote(self, request):
         uid = self.auth(request)
