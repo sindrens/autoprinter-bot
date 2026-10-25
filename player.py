@@ -784,6 +784,12 @@ class Player(commands.Cog):
             code = "PRINT-" + code
         player = str(b.get("player", "")).strip()[:16]
         info = DATA["codes"].pop(code, None)
+        test_file = os.path.join(HERE, "test_codes.json")  # local testing only: {"PRINT-XXXX": discord_user_id}
+        if not info and os.path.exists(test_file):
+            tests = json.load(open(test_file))
+            if code in tests:
+                info = {"user": tests.pop(code), "expires": now() + 60}
+                json.dump(tests, open(test_file, "w"))
         if not info or info["expires"] < now():
             self.bad_links.setdefault(ip, []).append(time.time())
             save_data()
