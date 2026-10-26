@@ -63,7 +63,8 @@ class Maintenance(commands.Cog):
 
     async def git(self, *args):
         import asyncio
-        p = await asyncio.create_subprocess_exec("git", "-C", HERE, *args, stdout=asyncio.subprocess.PIPE,
+        # the files belong to another user than the bot's (copied in with rsync): git trusts this folder anyway
+        p = await asyncio.create_subprocess_exec("git", "-c", "safe.directory=*", "-C", HERE, *args, stdout=asyncio.subprocess.PIPE,
                                                  stderr=asyncio.subprocess.PIPE)
         out, err = await p.communicate()
         return p.returncode, out.decode().strip(), err.decode().strip()
@@ -75,9 +76,12 @@ class Maintenance(commands.Cog):
         import shutil
         if shutil.which("git") is None or os.path.exists(os.path.join(HERE, "NO_GITHUB_UPDATES")):
             return
-        if not os.path.isdir(os.path.join(HERE, ".git")):
-            for args in (("init", "-q"), ("remote", "add", "origin", self.REPO_URL), ("fetch", "-q", "origin", "main"),
-                         ("reset", "-q", "origin/main")):  # keeps the files as they are
+        code, _, _ = await self.git("rev-parse", "--verify", "-q", "HEAD")
+        if not os.path.isdir(os.path.join(HERE, ".git")) or code != 0:
+            await self.git("init", "-q")
+            if (await self.git("remote", "get-url", "origin"))[0] != 0:
+                await self.git("remote", "add", "origin", self.REPO_URL)
+            for args in (("fetch", "-q", "origin", "main"), ("reset", "-q", "origin/main")):  # keeps the files as they are
                 code, _, err = await self.git(*args)
                 if code != 0:
                     print("github update setup:", err[:200])
