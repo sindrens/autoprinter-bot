@@ -316,6 +316,8 @@ class Player(commands.Cog):
         r.add_get(f"/api/{API_VERSION}/schematics/{{sid}}/file", self.h_schematic_file)
         r.add_post(f"/api/{API_VERSION}/build-schematic", self.h_build_schematic)
         r.add_post(f"/api/{API_VERSION}/admin/release", self.h_admin_release)
+        r.add_get(f"/api/{API_VERSION}/admin/log", self.h_admin_log)
+        r.add_post(f"/api/{API_VERSION}/admin/timelapse", self.h_admin_timelapse)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         await web.TCPSite(self.runner, API_HOST, API_PORT).start()
@@ -935,6 +937,41 @@ class Player(commands.Cog):
         except ValueError:
             return web.json_response({"ok": False, "error": "too big"}, status=413)
         return web.json_response({"ok": True})
+
+    async def h_admin_timelapse(self, request):
+        """Makes the time-lapse of a player's last build again (when it failed)."""
+        key = env("ADMIN_KEY", "")
+        if not key or request.headers.get("X-Admin-Key") != key:
+            raise web.HTTPUnauthorized(text="no")
+        uid, build = request.query.get("uid", ""), request.query.get("build", "")
+        p = DATA["players"].get(uid)
+        lib = self.bot.get_cog("Library")
+        c = self.bot.get_channel(int(p["channel"])) if p and p.get("channel") else None
+        if not (lib and c):
+            return web.json_response({"ok": False}, status=404)
+        await lib.post_timelapse(uid, c, build)
+        return web.json_response({"ok": True})
+
+    async def h_admin_log(self, request):
+        """The developer reads the bot's log (the end of logs/bot.log) and the runs folder, with the admin key."""
+        key = env("ADMIN_KEY", "")
+        if not key or request.headers.get("X-Admin-Key") != key:
+            raise web.HTTPUnauthorized(text="no")
+        if request.query.get("run"):
+            path = os.path.join(HERE, "library", "_runs", os.path.basename(request.query["run"]))
+            if os.path.exists(path):
+                return web.FileResponse(path)
+            raise web.HTTPNotFound()
+        n = min(2000, int(request.query.get("lines", "300")))
+        try:
+            lines = open(os.path.join(HERE, "logs", "bot.log"), errors="replace").read().splitlines()[-n:]
+        except FileNotFoundError:
+            lines = []
+        runs = os.path.join(HERE, "library", "_runs")
+        files = {f: [os.path.getsize(os.path.join(runs, f)), int(os.path.getmtime(os.path.join(runs, f)))]
+                 for f in (os.listdir(runs) if os.path.isdir(runs) else [])}
+        tex = os.path.join(HERE, "library", "textures")
+        return web.json_response({"log": lines, "runs": files, "textures": len(os.listdir(tex)) if os.path.isdir(tex) else 0})
 
     async def h_admin_release(self, request):
         """The developer's Mac sends a new version here (sync.py), so releases work with the bot on the droplet."""

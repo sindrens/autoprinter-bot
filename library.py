@@ -160,7 +160,9 @@ class Library(commands.Cog):
         try:
             gif = await in_thread(_timelapse, path, build or "Your build")
         except Exception as e:
+            import traceback
             print("time-lapse failed:", e)
+            traceback.print_exc()
             return
         e = discord.Embed(title=f"🎬 {build or 'Your build'}", color=GREEN,
                           description="Your build, layer by layer. **Wanna make it public?** Click 🌍 and it goes to #gifs.")
