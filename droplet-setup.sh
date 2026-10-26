@@ -22,6 +22,9 @@ WorkingDirectory=$DEST
 ExecStart=$DEST/.venv/bin/python -u bot.py
 Restart=always
 RestartSec=5
+# The website shares this server: the bot never takes more than this, and builds its pictures at low priority
+MemoryMax=700M
+Nice=10
 StandardOutput=append:$DEST/logs/bot.log
 StandardError=append:$DEST/logs/bot.log
 

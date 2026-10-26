@@ -393,19 +393,27 @@ def render(blocks, palette, scale=None, size=None, textured=True, lift=None, pad
         pad_o = np.pad(opaque, 1)
         # drawn if a face toward the camera (+y top, +x right, +z left) isn't covered by an opaque block
         exposed = occ & (~pad_o[2:, 1:-1, 1:-1] | ~pad_o[1:-1, 1:-1, 2:] | ~pad_o[1:-1, 2:, 1:-1])
-        y, z, x = np.nonzero(exposed)
+        y, z, x = (a.astype(np.int32) for a in np.nonzero(exposed))
+        del exposed, opaque, pad_o
         ids = blocks[y, z, x]
         order = np.argsort(x + y + z, kind="stable")
         y, z, x, ids = y[order], z[order], x[order], ids[order]
         u = (x - z + sz - 1) * s
-        v = ((x + z) * s / 2 + (sy - 1 - y) * s).astype(np.int64) + pad[0]
+        v = ((x + z) * s // 2 + (sy - 1 - y) * s).astype(np.int32) + pad[0]
         if lift:
-            v = v - np.where(y >= lift[0], lift[1], 0)
-        px = (u[:, None] + dx[None, :])
-        py = (v[:, None] + dy[None, :])
-        col = cols[ids]
-        ok = vis[ids] & (px >= 0) & (px < W) & (py >= 0) & (py < H)
-        canvas[py[ok], px[ok]] = col[ok]
+            v = v - np.where(y >= lift[0], lift[1], 0).astype(np.int32)
+        cols8 = cols.clip(0, 255).astype(np.uint8)
+        out = canvas.clip(0, 255).astype(np.uint8)
+        dx32, dy32 = dx.astype(np.int32), dy.astype(np.int32)
+        # in batches, in drawing order: a few MB at a time, also for a build of millions of blocks
+        step = max(1, 2_000_000 // max(1, len(dx)))
+        for a in range(0, len(ids), step):
+            b = a + step
+            px = u[a:b, None] + dx32[None, :]
+            py = v[a:b, None] + dy32[None, :]
+            ok = vis[ids[a:b]] & (px >= 0) & (px < W) & (py >= 0) & (py < H)
+            out[py[ok], px[ok]] = cols8[ids[a:b]][ok]
+        return Image.fromarray(out)
     return Image.fromarray(canvas.clip(0, 255).astype(np.uint8))
 
 
@@ -453,7 +461,9 @@ def timelapse(sch, title=None, frames=48, max_bytes=9_000_000):
     total = hi - lo + 1
     title = title or sch.name
     counts = np.cumsum((sch.blocks > 0).reshape(sy, -1).sum(axis=1))
-    for limit, nframes, colors in ((720, frames, 192), (600, frames, 160), (480, 36, 128), (360, 28, 96)):
+    if sch.count > 300_000:  # a very big build: fewer frames (each one is a full drawing)
+        frames = min(frames, 24)
+    for limit, nframes, colors in ((720, frames, 192), (600, frames, 160), (480, 24, 128), (360, 18, 96)):
         steps = sorted(set(np.linspace(lo, hi, min(nframes, total)).round().astype(int).tolist()))
         s = _scale_for(sx, sy, sz, limit, limit - 70)
         pad = (44, 34)

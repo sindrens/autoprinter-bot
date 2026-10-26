@@ -11,11 +11,17 @@ import subprocess
 import sys
 import time
 import urllib.request
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "litematica-printer-addon"))
-CODE = ["*.py", "requirements.txt", "*.md", "*.command", "state.json"]  # state.json: channel and role ids (set up from the Mac)
+CODE = ["*.py", "requirements.txt", "*.md", "*.command", "*.sh", "state.json"]  # state.json: channel and role ids (set up from the Mac)
 STAMP_FILE = os.path.join(HERE, "logs", "sync-stamp.json")
+GITHUB = "https://github.com/sindrens/litematica-printer-addon"
+BUILD_DIR = os.path.join(HERE, "release-build")     # a clean clone, only for building releases
+OUTBOX = os.path.join(HERE, "release-outbox")       # <version>/release.json + jar (+ card): posted as they are
+JDK_DIR = os.path.join(HERE, ".jdk")
+GITHUB_EVERY = 300
 
 
 def env(key, default=""):
@@ -79,6 +85,115 @@ def vkey(v):
     return [int(x) for x in re.findall(r"\d+", v or "0")]
 
 
+def log(*a):
+    print(time.strftime("%H:%M:%S"), *a, flush=True)
+
+
+def post_release(version, lines, jar_path, props, card_path=None):
+    with zipfile.ZipFile(jar_path) as z:
+        names = set(z.namelist())
+    missing = [n for n in ("printer_addon/log-channel.txt", "printer_addon/report-index.txt") if n not in names]
+    if missing:
+        raise RuntimeError(f"{os.path.basename(jar_path)} lacks {missing}: players' logs would go nowhere")
+    body = {"version": version, "lines": lines, "filename": os.path.basename(jar_path), "props": props,
+            "jar": base64.b64encode(open(jar_path, "rb").read()).decode(),
+            "card": base64.b64encode(open(card_path, "rb").read()).decode() if card_path and os.path.exists(card_path) else None}
+    req = urllib.request.Request(API + "/admin/release", data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", "X-Admin-Key": KEY})
+    with urllib.request.urlopen(req, timeout=300) as r:
+        log("release", version, "->", r.read().decode()[:200])
+
+
+def check_outbox():
+    """Releases put in release-outbox/<version>/ (release.json with version, lines, filename, props; the jar; a card)."""
+    if not os.path.isdir(OUTBOX):
+        return
+    for d in sorted(os.listdir(OUTBOX)):
+        folder = os.path.join(OUTBOX, d)
+        meta = os.path.join(folder, "release.json")
+        if not os.path.isfile(meta):
+            continue
+        m = json.load(open(meta))
+        if vkey(m["version"]) > vkey(latest_out()):
+            cards = glob.glob(os.path.join(folder, "*.png"))
+            post_release(m["version"], m["lines"], os.path.join(folder, m["filename"]), m.get("props") or {},
+                         cards[0] if cards else None)
+        done = os.path.join(HERE, "backups", "released")
+        os.makedirs(done, exist_ok=True)
+        os.replace(folder, os.path.join(done, d))
+
+
+def find_jdk():
+    """JDK 25 for the build: an installed one, else a copy of Eclipse Temurin 25 in .jdk (downloaded once)."""
+    try:
+        home = subprocess.run(["/usr/libexec/java_home", "-v", "25"], capture_output=True, text=True).stdout.strip()
+        if home and os.path.exists(os.path.join(home, "bin", "java")):
+            return home
+    except OSError:
+        pass
+    found = glob.glob(os.path.join(JDK_DIR, "*", "Contents", "Home")) + glob.glob(os.path.join(JDK_DIR, "*", "bin", "..")) 
+    for home in found:
+        if os.path.exists(os.path.join(home, "bin", "java")):
+            return os.path.abspath(home)
+    arch = "aarch64" if os.uname().machine in ("arm64", "aarch64") else "x64"
+    osname = "mac" if sys.platform == "darwin" else "linux"
+    url = f"https://api.adoptium.net/v3/binary/latest/25/ga/{osname}/{arch}/jdk/hotspot/normal/eclipse"
+    log("downloading JDK 25 for the builds...")
+    os.makedirs(JDK_DIR, exist_ok=True)
+    tgz = os.path.join(JDK_DIR, "jdk.tar.gz")
+    urllib.request.urlretrieve(url, tgz)
+    subprocess.run(["tar", "xzf", tgz, "-C", JDK_DIR], check=True)
+    os.remove(tgz)
+    return find_jdk()
+
+
+def git(*args):
+    return subprocess.run(["git", "-C", BUILD_DIR] + list(args), capture_output=True, text=True, check=True).stdout
+
+
+def check_github(failed):
+    """A new version on GitHub (gradle.properties + its CHANGELOG section): built in a clean clone and released."""
+    if not os.path.isdir(os.path.join(BUILD_DIR, ".git")):
+        subprocess.run(["git", "clone", "-q", GITHUB, BUILD_DIR], check=True)
+    git("fetch", "-q", "origin", "main")
+    git("reset", "-q", "--hard", "origin/main")
+    git("clean", "-fdq", "-e", ".gradle", "-e", "build")
+    text = open(os.path.join(BUILD_DIR, "gradle.properties")).read()
+    p = {}
+    for line in text.splitlines():
+        if "=" in line and not line.strip().startswith("#"):
+            k, v = line.split("=", 1)
+            p[k.strip()] = v.strip()
+    m = re.search(r"Litematica Printer ([\d.]+)", text)
+    p["printer_version"] = m.group(1) if m else "3.2.2"
+    version, mc = p.get("mod_version", ""), p.get("minecraft_version", "")
+    cl = open(os.path.join(BUILD_DIR, "CHANGELOG.md")).read()
+    m = re.search(rf"^## {re.escape(mc)}-{re.escape(version)}\s*$(.*?)(?=^## |\Z)", cl, re.M | re.S)
+    lines = [l.strip()[2:].strip() for l in m.group(1).splitlines() if l.strip().startswith("- ")] if m else []
+    if not version or not lines or vkey(version) <= vkey(latest_out()):
+        return failed
+    if failed.get(version, 0) > time.time() - 1800:
+        return failed
+    log("new version on GitHub:", version, "- building")
+    try:
+        channel = os.path.join(REPO, "src", "main", "resources", "printer_addon", "log-channel.txt")
+        dest = os.path.join(BUILD_DIR, "src", "main", "resources", "printer_addon", "log-channel.txt")
+        open(dest, "wb").write(open(channel, "rb").read())
+        env_ = dict(os.environ, JAVA_HOME=find_jdk())
+        r = subprocess.run(["./gradlew", "build", "-x", "test", "--no-daemon", "-q"], cwd=BUILD_DIR, env=env_,
+                           capture_output=True, text=True, timeout=1800)
+        if r.returncode != 0:
+            raise RuntimeError("build failed: " + (r.stderr or r.stdout)[-600:])
+        jar = os.path.join(BUILD_DIR, "build", "libs", f"{p.get('mod_id', 'printer_addon')}-{mc}-{version}.jar")
+        card = os.path.join(BUILD_DIR, "branding", "discord", f"release-{version}.png")
+        post_release(version, lines, jar, p, card)
+        failed.pop(version, None)
+    except Exception as e:
+        log("release of", version, "failed:", str(e)[-500:])
+        failed[version] = time.time()
+    return failed
+
+
 def check_release(sent):
     p = props()
     version, mc = p.get("mod_version", ""), p.get("minecraft_version", "")
@@ -107,6 +222,8 @@ def main():
     except (OSError, ValueError):
         last = {}
     sent = set()
+    failed = {}
+    last_github = 0
     me = os.path.getmtime(__file__)
     while True:
         if os.path.getmtime(__file__) != me:  # sync.py itself was updated: start again with the new code
@@ -122,6 +239,16 @@ def main():
             sent = check_release(sent)
         except Exception as e:
             print("release check:", e, flush=True)
+        try:
+            check_outbox()
+        except Exception as e:
+            log("outbox:", e)
+        if time.time() - last_github > GITHUB_EVERY:
+            last_github = time.time()
+            try:
+                failed = check_github(failed)
+            except Exception as e:
+                log("github check:", e)
         time.sleep(60)
 
 

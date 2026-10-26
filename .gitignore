@@ -14,3 +14,6 @@ __pycache__/
 .DS_Store
 library/
 test_codes.json
+release-build/
+release-outbox/
+.jdk/

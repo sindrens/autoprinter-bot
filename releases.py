@@ -75,8 +75,60 @@ def icon_for(line):
     return "check"
 
 
+def pillow_card(version, date, lines):
+    """A release card drawn here (no browser needed): the logo's gradient, the version big, the changes listed."""
+    import numpy as np
+    from PIL import Image, ImageDraw
+    from schem import _font
+    W, H = 1600, 960
+    xs = np.linspace(0, 1, W)[None, :, None]
+    ys = np.linspace(0, 1, H)[:, None, None]
+    t = np.clip(xs * 0.7 + ys * 0.3, 0, 1)
+    c1, c2, c3 = np.array([34, 211, 238.0]), np.array([14, 165, 233.0]), np.array([79, 70, 229.0])
+    rgb = np.where(t < 0.42, c1 + (c2 - c1) * (t / 0.42), c2 + (c3 - c2) * ((t - 0.42) / 0.58))
+    img = Image.fromarray(rgb.astype(np.uint8))
+    d = ImageDraw.Draw(img)
+    for x in range(0, W, 64):
+        d.line([(x, 0), (x, H)], fill=(255, 255, 255, 18), width=2)
+    for y in range(0, H, 64):
+        d.line([(0, y), (W, y)], fill=(255, 255, 255, 18), width=2)
+    img = Image.blend(Image.fromarray(rgb.astype(np.uint8)), img, 0.12)
+    d = ImageDraw.Draw(img)
+    try:
+        logo = Image.open(os.path.join(HERE, "assets", "server_icon.png")).convert("RGBA").resize((56, 56))
+        img.paste(logo, (W - 330, 44), logo)
+    except OSError:
+        pass
+    d.text((W - 262, 72), "Printer Addon", font=_font(30), fill="white", anchor="lm")
+    d.rounded_rectangle((100, 80, 330, 136), radius=28, outline=(255, 255, 255), width=2)
+    d.text((215, 108), "New version", font=_font(28), fill="white", anchor="mm")
+    d.text((96, 170), f"v{version}", font=_font(150), fill="white")
+    d.text((100, 352), f"Printer Addon · {date}", font=_font(34), fill=(240, 249, 255))
+    y = 450
+    for line in lines[:6]:
+        d.ellipse((100, y, 152, y + 52), fill="white")
+        d.text((126, y + 26), "✓", font=_font(30), fill=(67, 56, 202), anchor="mm")
+        text = line if len(line) <= 58 else line[:56].rsplit(" ", 1)[0] + "…"
+        d.text((180, y + 26), text, font=_font(34), fill="white", anchor="lm")
+        y += 76
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
 async def render_card(version, date, lines):
-    """The release card in the logo's style (branding/discord_images.py + render-pages.js). None if that can't run."""
+    """The release card in the logo's style (branding/discord_images.py + render-pages.js). Drawn here when that
+    can't run (on the droplet)."""
+    card = await _render_branding_card(version, date, lines)
+    if card is None:
+        try:
+            card = await asyncio.get_running_loop().run_in_executor(None, pillow_card, version, date, lines)
+        except Exception as e:
+            print("card failed:", e)
+    return card
+
+
+async def _render_branding_card(version, date, lines):
     branding = os.path.join(REPO, "branding")
     ready = os.path.join(branding, "discord", f"release-{version}.png")
     if os.path.exists(ready):  # made by hand already (branding/discord_images.py)
