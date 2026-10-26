@@ -78,6 +78,8 @@ ALERTS = {  # event type -> (emoji, title, ping the owner?)
     "vault_empty": ("🗄️", "Vaults are empty", True),
     "error": ("⚠️", "Something went wrong", True),
     "custom": ("💬", "Message from the game", False),
+    "collectors_sold": ("💰", "Collectors sold (AutoSell)", False),
+    "collectors_problem": ("⚠️", "AutoSell stopped", True),
 }
 # What players can choose to get (in their control room). Less is more: only what needs them is on by default.
 NOTIFY = {  # key: (label, description, default on)
@@ -89,10 +91,12 @@ NOTIFY = {  # key: (label, description, default on)
     "shopping": ("🛒 Shopping list", "What a build still needs, at the start", False),
     "timelapse": ("🎬 Time-lapse", "A GIF of the build going up when it's done (you choose if it's public)", True),
     "achievements": ("🏅 Achievements", "Show my achievements in #general", True),
+    "selling": ("💰 Collector sales", "What AutoSell earned on each round", False),
 }
 CATEGORY = {"run_start": "startstop", "stopped": "startstop", "finished": "finished", "kicked": "kicked",
             "rejoined": "rejoined", "stuck": "problems", "no_money": "problems", "no_items": "problems",
-            "vault_empty": "problems", "error": "problems", "custom": "problems"}
+            "vault_empty": "problems", "error": "problems", "custom": "problems",
+            "collectors_sold": "selling", "collectors_problem": "problems"}
 
 
 def wants(p, key):
