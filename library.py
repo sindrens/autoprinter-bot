@@ -42,9 +42,9 @@ def _analyse(data):
     return sch.name, sch.size, sch.count, sch.materials(8), buf.getvalue()
 
 
-def _timelapse(path):
+def _timelapse(path, title):
     s = schem()
-    return s.timelapse(s.load(open(path, "rb").read()))
+    return s.timelapse(s.load(open(path, "rb").read()), title)
 
 
 def info_embed(item, author=None):
@@ -64,12 +64,12 @@ def info_embed(item, author=None):
 
 
 class ShareView(discord.ui.View):
-    """Under a time-lapse in a control room: share it to #showcase."""
+    """Under a time-lapse in a control room: make it public in #gifs."""
 
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Share to #showcase", emoji="📸", style=discord.ButtonStyle.secondary, custom_id="tl:share")
+    @discord.ui.button(label="Make it public", emoji="🌍", style=discord.ButtonStyle.success, custom_id="tl:share")
     async def share(self, inter, button):
         msg = inter.message
         owner = next((u for u, p in DATA["players"].items() if p.get("channel") == inter.channel_id), None)
@@ -80,13 +80,17 @@ class ShareView(discord.ui.View):
             return await inter.response.send_message("The GIF is gone.", ephemeral=True)
         await inter.response.defer(ephemeral=True)
         title = msg.embeds[0].title if msg.embeds else "A build"
-        e = discord.Embed(description=f"**{title.replace('🎬 ', '')}**\nBuilt with Printer Addon by {inter.user.mention}", color=BRAND)
+        e = discord.Embed(description=f"🎬 **{title.replace('🎬 ', '')}**\nbuilt by {inter.user.mention} with Printer Addon",
+                          color=BRAND)
         e.set_image(url=f"attachment://{gif.filename}")
-        await ch("showcase").send(embed=e, file=await gif.to_file(), allowed_mentions=discord.AllowedMentions.none())
+        target = (ch("gifs") if CH.get("gifs") else None) or discord.utils.get(inter.guild.text_channels, name="🎬・gifs") \
+            or ch("showcase")
+        posted = await target.send(embed=e, file=await gif.to_file(), allowed_mentions=discord.AllowedMentions.none())
+        await posted.add_reaction("🔥")
         button.disabled = True
-        button.label = "Shared"
+        button.label = "Public"
         await msg.edit(view=self)
-        await inter.followup.send("Shared in #showcase!", ephemeral=True)
+        await inter.followup.send(f"It's public now: {posted.jump_url}", ephemeral=True)
 
 
 class Library(commands.Cog):
@@ -154,11 +158,12 @@ class Library(commands.Cog):
         if not os.path.exists(path) or time.time() - os.path.getmtime(path) > 7 * 86400:
             return
         try:
-            gif = await in_thread(_timelapse, path)
+            gif = await in_thread(_timelapse, path, build or "Your build")
         except Exception as e:
             print("time-lapse failed:", e)
             return
-        e = discord.Embed(title=f"🎬 {build or 'Your build'}", color=GREEN, description="Layer by layer, start to finish.")
+        e = discord.Embed(title=f"🎬 {build or 'Your build'}", color=GREEN,
+                          description="Your build, layer by layer. **Wanna make it public?** Click 🌍 and it goes to #gifs.")
         e.set_image(url="attachment://timelapse.gif")
         await channel.send(embed=e, file=discord.File(io.BytesIO(gif), "timelapse.gif"), view=ShareView())
 

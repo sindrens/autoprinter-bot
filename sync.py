@@ -8,12 +8,13 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "litematica-printer-addon"))
-CODE = ["*.py", "requirements.txt", "*.md", "*.command"]
+CODE = ["*.py", "requirements.txt", "*.md", "*.command", "state.json"]  # state.json: channel and role ids (set up from the Mac)
 STAMP_FILE = os.path.join(HERE, "logs", "sync-stamp.json")
 
 
@@ -106,7 +107,10 @@ def main():
     except (OSError, ValueError):
         last = {}
     sent = set()
+    me = os.path.getmtime(__file__)
     while True:
+        if os.path.getmtime(__file__) != me:  # sync.py itself was updated: start again with the new code
+            os.execv(sys.executable, [sys.executable, "-u", __file__])
         try:
             new = sync_code(last)
             if new != last:

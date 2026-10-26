@@ -13,7 +13,8 @@ BACKUP_DIR = os.path.join(HERE, "backups", "data")
 
 
 def code_stamp():
-    return {p: os.path.getmtime(p) for p in glob.glob(os.path.join(HERE, "*.py"))}
+    files = glob.glob(os.path.join(HERE, "*.py")) + [os.path.join(HERE, "state.json")]
+    return {p: os.path.getmtime(p) for p in files if os.path.exists(p)}
 
 
 class Maintenance(commands.Cog):

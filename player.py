@@ -5,6 +5,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import secrets
 import time
 
@@ -85,7 +86,7 @@ NOTIFY = {  # key: (label, description, default on)
     "startstop": ("▶️ Started / stopped", "Every start and stop", False),
     "rejoined": ("🔁 Rejoined", "Joined the server again by itself", False),
     "shopping": ("🛒 Shopping list", "What a build still needs, at the start", False),
-    "timelapse": ("🎬 Time-lapse", "A GIF of the build going up when it's done", True),
+    "timelapse": ("🎬 Time-lapse", "A GIF of the build going up when it's done (you choose if it's public)", True),
     "achievements": ("🏅 Achievements", "Show my achievements in #general", True),
 }
 CATEGORY = {"run_start": "startstop", "stopped": "startstop", "finished": "finished", "kicked": "kicked",
@@ -857,7 +858,8 @@ class Player(commands.Cog):
             fields = [("Blocks", fmt_num(run.get("blocks", 0))), ("Time", fmt_time(run.get("seconds", 0)))]
             if run.get("money"):
                 fields.append(("Spent", fmt_num(run["money"])))
-            build = esc(str(run.get("build", "")))[:200]
+            raw_build = re.sub(r",\s*Y -?\d+ to -?\d+\s*$", "", re.sub(r"(?i)^auto build:?\s*", "", str(run.get("build", ""))))
+            build = esc(raw_build)[:200]
             kind = "finished" if result == "finished" else (run.get("kind") if run.get("kind") in ALERTS else "error") if result == "problem" else "stopped"
             text = (f"**{build}**\n" if build else "") + text
             await self.alert(uid, kind, text, fields)
@@ -865,7 +867,7 @@ class Player(commands.Cog):
             lib = self.bot.get_cog("Library")
             c = self.bot.get_channel(int(p["channel"])) if p.get("channel") else None
             if kind == "finished" and lib and c and wants(p, "timelapse"):
-                asyncio.create_task(lib.post_timelapse(uid, c, str(run.get("build", ""))[:80]))
+                asyncio.create_task(lib.post_timelapse(uid, c, raw_build[:80]))
         else:
             if kind not in ALERTS:
                 kind = "custom"
