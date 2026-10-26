@@ -17,3 +17,4 @@ test_codes.json
 release-build/
 release-outbox/
 .jdk/
+messages.json

@@ -26,15 +26,17 @@ class Maintenance(commands.Cog):
         self.bot.loop.create_task(self.ensure_requirements())
         self.reload_watch.start()
         self.nightly.start()
+        self.github_update.start()
 
     async def cog_unload(self):
         self.reload_watch.cancel()
         self.nightly.cancel()
+        self.github_update.cancel()
 
     async def ensure_requirements(self):
         """Installs what requirements.txt asks for when something is missing (e.g. numpy for the previews)."""
         import asyncio, importlib.util, sys
-        missing = [m for m in ("numpy", "PIL") if importlib.util.find_spec(m) is None]
+        missing = [m for m in ("numpy", "PIL", "imageio", "imageio_ffmpeg") if importlib.util.find_spec(m) is None]
         if not missing:
             return
         print("Installing", missing)
@@ -55,6 +57,56 @@ class Maintenance(commands.Cog):
                 pass
             save_data()
             os._exit(0)  # launchd (KeepAlive) starts the new code
+
+    # ------------------------------------------------ updates from GitHub
+    REPO_URL = "https://github.com/sindrens/autoprinter-bot"
+
+    async def git(self, *args):
+        import asyncio
+        p = await asyncio.create_subprocess_exec("git", "-C", HERE, *args, stdout=asyncio.subprocess.PIPE,
+                                                 stderr=asyncio.subprocess.PIPE)
+        out, err = await p.communicate()
+        return p.returncode, out.decode().strip(), err.decode().strip()
+
+    @tasks.loop(minutes=5)
+    async def github_update(self):
+        """The bot's code comes from GitHub by itself: every 5 minutes a new commit on main is taken (the code files
+        only: data, settings and logs aren't in git). Changed code restarts the bot (see reload_watch)."""
+        import shutil
+        if shutil.which("git") is None or os.path.exists(os.path.join(HERE, "NO_GITHUB_UPDATES")):
+            return
+        if not os.path.isdir(os.path.join(HERE, ".git")):
+            for args in (("init", "-q"), ("remote", "add", "origin", self.REPO_URL), ("fetch", "-q", "origin", "main"),
+                         ("reset", "-q", "origin/main")):  # keeps the files as they are
+                code, _, err = await self.git(*args)
+                if code != 0:
+                    print("github update setup:", err[:200])
+                    return
+            print("Updates from GitHub set up")
+            return
+        code, _, err = await self.git("fetch", "-q", "origin", "main")
+        if code != 0:
+            return
+        _, head, _ = await self.git("rev-parse", "HEAD")
+        _, remote, _ = await self.git("rev-parse", "origin/main")
+        if head == remote:
+            return
+        _, changed, _ = await self.git("diff", "--name-only", head, remote)
+        # Files the bot writes itself are kept as they are (messages.json left git; a reset would take it away)
+        keep = {}
+        for name in ("messages.json",):
+            path = os.path.join(HERE, name)
+            if os.path.exists(path):
+                keep[path] = open(path, "rb").read()
+        code, _, err = await self.git("reset", "-q", "--hard", "origin/main")
+        for path, data in keep.items():
+            open(path, "wb").write(data)
+        if code == 0:
+            print("Updated from GitHub:", changed.replace("\n", ", ")[:300])
+            try:
+                await log("⬇️ Updated from GitHub", changed.replace("\n", ", ")[:1000], GREY)
+            except Exception:
+                pass
 
     @tasks.loop(time=dt.time(hour=3))
     async def nightly(self):

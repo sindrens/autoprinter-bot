@@ -3,6 +3,7 @@ stats, achievements, leaderboard, live counter, commands overview and dev-reply 
 import asyncio
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 import re
@@ -148,6 +149,7 @@ HELP = [
     ]),
     ("🛠️ Developer", [
         ("Automatic releases", "A new version in the mod repo with a CHANGELOG entry is posted by itself"),
+        ("/log-summary", "Where the players' time goes, and each version compared"),
         ("/release-check", "Check the mod repo for a new version now"),
         ("/release", "Post a version by hand"),
         ("/post · /edit", "Write or edit a message as the bot"),
@@ -296,6 +298,7 @@ class Player(commands.Cog):
         self.dirty = set()
         self.last_status_at = {}
         self.bad_links = {}
+        self.installs_by_ip = {}
 
     async def cog_load(self):
         self.bot.add_view(LinkView(self))
@@ -315,6 +318,9 @@ class Player(commands.Cog):
         r.add_get(f"/api/{API_VERSION}/schematics", self.h_schematics)
         r.add_get(f"/api/{API_VERSION}/schematics/{{sid}}/file", self.h_schematic_file)
         r.add_post(f"/api/{API_VERSION}/build-schematic", self.h_build_schematic)
+        r.add_post(f"/api/{API_VERSION}/prices", self.h_prices)
+        r.add_post(f"/api/{API_VERSION}/install", self.h_install)
+        r.add_post(f"/api/{API_VERSION}/report", self.h_report)
         r.add_post(f"/api/{API_VERSION}/admin/release", self.h_admin_release)
         r.add_get(f"/api/{API_VERSION}/admin/log", self.h_admin_log)
         r.add_post(f"/api/{API_VERSION}/admin/timelapse", self.h_admin_timelapse)
@@ -453,7 +459,12 @@ class Player(commands.Cog):
         n_on = sum(1 for k in NOTIFY if wants(p, k))
         seen = f"<t:{p['last_seen']}:R>" if p.get("last_seen") else "never"
         e.set_footer(text=f"Printer Addon {st.get('version', '?')} · {n_on} notifications on (⚙️ to change)")
-        e.description = f"Last update {seen}. The buttons send a command to your game."
+        if state == "offline" and now() - p.get("last_seen", 0) > 600:
+            e.description = (f"Last heard from your game {seen}.\n"
+                             "**Game on but still offline here?** The link may be gone (linked from another game, or "
+                             "unlinked): type **/link** and press **J + L** in game.")
+        else:
+            e.description = f"Last update {seen}. The buttons send a command to your game."
         return e
 
     async def edit_panel(self, uid, force=False):
@@ -812,7 +823,11 @@ class Player(commands.Cog):
         save_data()
         guild = self.bot.get_guild(GUILD.id)
         member = guild.get_member(int(uid)) or await guild.fetch_member(int(uid))
+        relinked = bool(p.get("channel"))
         c = await self.control_room(guild, member, player)
+        if relinked:
+            await c.send(embed=discord.Embed(description=f"🔗 Linked again from **{esc(player)}**. An older link from "
+                                                         "another game stopped working.", color=GREEN))
         await log("🔗 Game linked", f"{member.mention} ↔ **{esc(player)}** · {c.mention}", GREEN, user=member)
         await self.check_achievements(uid)
         return web.json_response({"ok": True, "token": token, "discord": member.display_name,
@@ -910,11 +925,82 @@ class Player(commands.Cog):
             await c.send(embed=discord.Embed(title="🛒 Shopping list", description=text[:4000], color=BRAND))
         return web.json_response({"ok": True})
 
+    # ------------------------------------------------ logs and reports from the game (instead of a webhook in the jar)
+    def client_ip(self, request):
+        return request.headers.get("X-Forwarded-For", request.remote or "?").split(",")[0].strip()
+
+    async def h_install(self, request):
+        """Every game gets its own key once (no Discord link needed): reports are sent with it, and a key that spams
+        can be blocked on its own. At most 5 new keys per address an hour."""
+        ip = self.client_ip(request)
+        recent = [t for t in self.installs_by_ip.get(ip, []) if time.time() - t < 3600]
+        if len(recent) >= 5:
+            return web.json_response({"ok": False, "error": "too many new keys, try again later"}, status=429)
+        recent.append(time.time())
+        self.installs_by_ip[ip] = recent
+        key = secrets.token_urlsafe(24)
+        DATA.setdefault("installs", {})[hashlib.sha256(key.encode()).hexdigest()] = {"at": now(), "reports": [], "blocked": False}
+        save_data()
+        return web.json_response({"ok": True, "key": key})
+
+    async def h_report(self, request):
+        """A log or problem report: multipart with 'payload' (JSON: title, description, fields, color, content) and up
+        to 6 files, 9.5 MB in all. Posted in #player-reports by the bot. With the install key (X-Install-Key)."""
+        key = request.headers.get("X-Install-Key", "")
+        inst = DATA.get("installs", {}).get(hashlib.sha256(key.encode()).hexdigest())
+        if not inst or inst.get("blocked"):
+            raise web.HTTPUnauthorized(text="unknown or blocked install key: get one from /install")
+        hour = [t for t in inst.get("reports", []) if time.time() - t < 3600]
+        if len(hour) >= 30:
+            return web.json_response({"ok": False, "error": "too many reports this hour"}, status=429)
+        reader = await request.multipart()
+        payload, files, size = {}, [], 0
+        async for part in reader:
+            if part.name == "payload":
+                payload = json.loads(await part.text())
+            elif part.filename and len(files) < 6:
+                data = await part.read(decode=False)
+                size += len(data)
+                if size > 9_900_000:
+                    return web.json_response({"ok": False, "error": "files too big (9.5 MB in all)"}, status=413)
+                files.append(discord.File(io.BytesIO(data), filename=os.path.basename(part.filename)[:100]))
+        e = discord.Embed(title=str(payload.get("title", "Report"))[:256], description=str(payload.get("description", ""))[:4000],
+                          color=int(payload.get("color", BRAND)) if str(payload.get("color", "")).isdigit() else BRAND)
+        for f in (payload.get("fields") or [])[:20]:
+            e.add_field(name=str(f.get("name", "-"))[:256], value=str(f.get("value", "-"))[:1024], inline=bool(f.get("inline")))
+        content = str(payload.get("content", ""))[:1900] or None
+        msg = await ch("player_reports").send(content=content, embed=e, files=files, allowed_mentions=discord.AllowedMentions.none())
+        hour.append(time.time())
+        inst["reports"] = hour
+        save_data()
+        return web.json_response({"ok": True, "id": str(msg.id), "url": msg.jump_url})
+
+    async def h_prices(self, request):
+        """Shop prices from a player's shop scan (J+S), per server: the library says what a build costs there."""
+        self.auth(request)
+        b = await self.body(request)
+        server = str(b.get("server", "")).lower()[:80]
+        prices = b.get("prices") or {}
+        clean = {}
+        for k, v in list(prices.items())[:3000]:
+            try:
+                if isinstance(k, str) and 0 < float(v) < 1e9:
+                    clean[k[:80]] = float(v)
+            except (TypeError, ValueError):
+                pass
+        if server and clean:
+            DATA.setdefault("prices", {})[server] = {"prices": clean, "at": now()}
+            save_data()
+        return web.json_response({"ok": True, "items": len(clean)})
+
     async def h_schematics(self, request):
         lib = self.bot.get_cog("Library")
         rows = lib.find(request.query.get("q", ""))[:30] if lib else []
+        from library import cost_of
+        server = request.query.get("server", "").lower() or None
         return web.json_response({"schematics": [
             {"id": s["id"], "name": s["name"], "size": s["size"], "blocks": s["blocks"], "tag": s.get("tag"),
+             "stars": s.get("stars", 0), "cost": cost_of(s, server)[0],
              "by": (self.bot.get_user(s["user"]).display_name if self.bot.get_user(s["user"]) else "?")} for s in rows]})
 
     async def h_schematic_file(self, request):

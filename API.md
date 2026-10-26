@@ -1,6 +1,6 @@
 # Printer Addon ↔ Discord API (v1)
 
-Base URL: `https://<vps-domain>/api/v1` (set later; local test: `http://localhost:8787/api/v1`).
+Base URL: `http://139.59.156.198/api/v1` (nginx on port 80 in front of the bot; port 8787 works too but some networks block it).
 All bodies are JSON. After linking, send `Authorization: Bearer <token>` on every call.
 Never send chat, coordinates, chest or vault locations.
 
@@ -53,3 +53,18 @@ If `latest` is newer than the mod's version, show "Update available".
 
 ## Health
 `GET /health` → `{ "ok": true }`
+
+## Logs and reports (no webhook in the jar)
+Every game gets its own key once, no Discord link needed:
+`POST /install` → `{ "ok": true, "key": "..." }` (keep it in the config folder; at most 5 new keys per address an hour)
+
+`POST /report` with header `X-Install-Key: <key>`, `multipart/form-data`:
+- part `payload` (JSON): `{ "title": "Log from Pouched · Finished · v0.17.5", "description": "...", "fields": [ {"name": "...", "value": "...", "inline": false} ], "color": 3447003, "content": "small searchable line" }`
+- up to 6 file parts (the run's .jsonl or .jsonl.gz, debug.txt, game-log.txt, a screenshot...), 9.5 MB in all
+
+→ `{ "ok": true, "id": "<discord message id>", "url": "<jump url>" }`; `429` = too many this hour (30 per key), `413` = too big, `401` = get a new key.
+The bot posts it in #player-reports itself, so the same titles keep working (Logger role, weekly summary).
+
+## Shop prices (for the schematic library)
+`POST /prices` (with the link token) `{ "server": "play.mythian.net", "prices": { "minecraft:sand": 5.7, ... } }`
+`GET /schematics?q=&server=play.mythian.net` → each schematic also has `stars` and `cost` (at that server's prices).

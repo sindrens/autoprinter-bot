@@ -172,7 +172,8 @@ LOG_TITLE = re.compile(r"^(?:Log|Problem) from ([A-Za-z0-9_]{2,16})")
 
 
 def log_player(msg):
-    if not msg.webhook_id or not msg.embeds:
+    # reports come from the mod's webhook, or (newer versions) through the bot's own API
+    if not (msg.webhook_id or (bot.user and msg.author.id == bot.user.id)) or not msg.embeds:
         return None
     m = LOG_TITLE.match(msg.embeds[0].title or "")
     return m.group(1).lower() if m else None
@@ -340,6 +341,7 @@ async def _setup_hook():
     await bot.load_extension("maintenance")
     await bot.load_extension("forums")
     await bot.load_extension("library")
+    await bot.load_extension("summary")
 
 bot.setup_hook = _setup_hook
 

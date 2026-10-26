@@ -39,7 +39,41 @@ def _analyse(data):
     img = s.preview(sch)
     buf = io.BytesIO()
     img.save(buf, "PNG")
-    return sch.name, sch.size, sch.count, sch.materials(8), buf.getvalue()
+    import numpy as np
+    ids, n = np.unique(sch.blocks[sch.blocks > 0], return_counts=True)
+    raw = {sch.palette[i].split("[")[0]: int(c) for i, c in zip(ids, n)}
+    return sch.name, sch.size, sch.count, sch.materials(8), buf.getvalue(), raw
+
+
+# blocks that are bought as another item
+ITEM_FOR = {"minecraft:redstone_wire": "minecraft:redstone", "minecraft:tripwire": "minecraft:string",
+            "minecraft:farmland": "minecraft:dirt", "minecraft:wall_torch": "minecraft:torch",
+            "minecraft:redstone_wall_torch": "minecraft:redstone_torch", "minecraft:water": None, "minecraft:lava": None,
+            "minecraft:bubble_column": None, "minecraft:attached_pumpkin_stem": "minecraft:pumpkin_seeds",
+            "minecraft:pumpkin_stem": "minecraft:pumpkin_seeds", "minecraft:attached_melon_stem": "minecraft:melon_seeds",
+            "minecraft:melon_stem": "minecraft:melon_seeds", "minecraft:wheat": "minecraft:wheat_seeds",
+            "minecraft:carrots": "minecraft:carrot", "minecraft:potatoes": "minecraft:potato",
+            "minecraft:cocoa": "minecraft:cocoa_beans", "minecraft:kelp_plant": "minecraft:kelp"}
+
+
+def cost_of(item, server=None):
+    """(estimated cost, share of the blocks priced) at the shop prices players sent from a server, or (None, 0)."""
+    prices_by = DATA.get("prices", {})
+    if not prices_by or not item.get("raw"):
+        return None, 0
+    if not server or server not in prices_by:
+        server = max(prices_by, key=lambda k: prices_by[k].get("at", 0))
+    prices = prices_by[server]["prices"]
+    total, priced, blocks = 0.0, 0, 0
+    for block, count in item["raw"].items():
+        it = ITEM_FOR.get(block, block)
+        if it is None:
+            continue
+        blocks += count
+        if it in prices:
+            total += prices[it] * count
+            priced += count
+    return (round(total), priced / blocks if blocks else 0) if priced else (None, 0)
 
 
 def _timelapse(path, title):
@@ -53,6 +87,9 @@ def info_embed(item, author=None):
     e.add_field(name="Size", value=f"{x} × {y} × {z}")
     e.add_field(name="Blocks", value=f"{item['blocks']:,}")
     e.add_field(name="ID", value=f"`{item['id']}`")
+    cost, share = cost_of(item)
+    if cost is not None:
+        e.add_field(name="Cost in the shop", value=f"~${cost:,}" + ("" if share > 0.95 else f" ({share:.0%} of the blocks priced)"))
     if item.get("materials"):
         e.add_field(name="Materials", inline=False,
                     value="\n".join(f"{c:,} × {n}" for n, c in item["materials"][:8]))
@@ -75,14 +112,15 @@ class ShareView(discord.ui.View):
         owner = next((u for u, p in DATA["players"].items() if p.get("channel") == inter.channel_id), None)
         if owner != str(inter.user.id):
             return await inter.response.send_message("Only the owner can share this.", ephemeral=True)
-        gif = next((a for a in msg.attachments if a.filename.endswith(".gif")), None)
+        gif = next((a for a in msg.attachments if a.filename.endswith((".gif", ".mp4"))), None)
         if not gif:
             return await inter.response.send_message("The GIF is gone.", ephemeral=True)
         await inter.response.defer(ephemeral=True)
         title = msg.embeds[0].title if msg.embeds else "A build"
         e = discord.Embed(description=f"🎬 **{title.replace('🎬 ', '')}**\nbuilt by {inter.user.mention} with Printer Addon",
                           color=BRAND)
-        e.set_image(url=f"attachment://{gif.filename}")
+        if gif.filename.endswith(".gif"):
+            e.set_image(url=f"attachment://{gif.filename}")
         target = (ch("gifs") if CH.get("gifs") else None) or discord.utils.get(inter.guild.text_channels, name="🎬・gifs") \
             or ch("showcase")
         posted = await target.send(embed=e, file=await gif.to_file(), allowed_mentions=discord.AllowedMentions.none())
@@ -107,22 +145,28 @@ class Library(commands.Cog):
         """Saves the file, draws the preview and posts it (or answers in the given forum thread)."""
         if len(data) > MAX_BYTES:
             raise ValueError("The file is bigger than 8 MB.")
-        sname, size, count, mats, png = await in_thread(_analyse, data)
+        sname, size, count, mats, png, raw = await in_thread(_analyse, data)
         sid = secrets.token_hex(3)
         name = safe_name(name or os.path.splitext(filename)[0] or sname)
         open(os.path.join(LIB, f"{sid}.litematic"), "wb").write(data)
         item = {"id": sid, "name": name, "size": list(size), "blocks": count, "materials": mats, "desc": desc,
-                "user": user.id, "tag": tag, "added": int(time.time()), "file": f"{name}.litematic"}
+                "user": user.id, "tag": tag, "added": int(time.time()), "file": f"{name}.litematic", "raw": raw, "stars": 0}
         files = [discord.File(io.BytesIO(png), "preview.png"),
                  discord.File(io.BytesIO(data), f"{name.replace(' ', '_')}.litematic")]
         forum = ch("schematics")
         if thread is not None:
             m = await thread.send(embed=info_embed(item, user), files=[files[0]])
             item["thread"] = thread.id
+            first = await thread.fetch_message(thread.id)
         else:
             tags = [t for t in forum.available_tags if t.name == (tag or "Other")]
             t = await forum.create_thread(name=f"{name}", embed=info_embed(item, user), files=files, applied_tags=tags)
             item["thread"] = t.thread.id
+            first = t.message
+        try:
+            await first.add_reaction("⭐")
+        except discord.HTTPException:
+            pass
         DATA["schematics"][sid] = item
         save_data()
         return item
@@ -158,7 +202,7 @@ class Library(commands.Cog):
         if not os.path.exists(path) or time.time() - os.path.getmtime(path) > 7 * 86400:
             return
         try:
-            gif = await in_thread(_timelapse, path, build or "Your build")
+            data, ext = await in_thread(_timelapse, path, build or "Your build")
         except Exception as e:
             import traceback
             print("time-lapse failed:", e)
@@ -166,8 +210,9 @@ class Library(commands.Cog):
             return
         e = discord.Embed(title=f"🎬 {build or 'Your build'}", color=GREEN,
                           description="Your build, layer by layer. **Wanna make it public?** Click 🌍 and it goes to #gifs.")
-        e.set_image(url="attachment://timelapse.gif")
-        await channel.send(embed=e, file=discord.File(io.BytesIO(gif), "timelapse.gif"), view=ShareView())
+        if ext == "gif":
+            e.set_image(url="attachment://timelapse.gif")
+        await channel.send(embed=e, file=discord.File(io.BytesIO(data), f"timelapse.{ext}"), view=ShareView())
 
     # ------------------------------------------------ commands
     group = app_commands.Group(name="schematic", description="The schematic library")
@@ -190,16 +235,39 @@ class Library(commands.Cog):
     @group.command(name="search", description="Find schematics in the library")
     async def search(self, inter: discord.Interaction, words: str = ""):
         rows = self.find(words)[:15]
-        lines = [f"`{s['id']}` **{s['name']}** · {s['size'][0]}×{s['size'][1]}×{s['size'][2]} · <#{s['thread']}>" for s in rows]
+        lines = []
+        for s in rows:
+            cost, _ = cost_of(s)
+            lines.append(f"`{s['id']}` **{s['name']}**" + (f" ⭐{s['stars']}" if s.get("stars") else "")
+                         + f" · {s['size'][0]}×{s['size'][1]}×{s['size'][2]}" + (f" · ~${cost:,}" if cost else "")
+                         + f" · <#{s['thread']}>")
         await inter.response.send_message(embed=discord.Embed(
             title=f"📐 Schematics{' · ' + words if words else ''}", color=BRAND,
             description="\n".join(lines) or "Nothing found. Share one with **/schematic share**."), ephemeral=True)
+
+    # ⭐ under a library post: the best ones come first (in game and in /schematic search)
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, ev):
+        await self._star(ev, +1)
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_remove(self, ev):
+        await self._star(ev, -1)
+
+    async def _star(self, ev, d):
+        if str(ev.emoji) != "⭐" or ev.user_id == self.bot.user.id:
+            return
+        for s in DATA["schematics"].values():
+            if s.get("thread") == ev.message_id:
+                s["stars"] = max(0, s.get("stars", 0) + d)
+                save_data()
+                return
 
     def find(self, words=""):
         words = (words or "").lower().split()
         rows = [s for s in DATA["schematics"].values()
                 if all(w in (s["name"] + " " + (s.get("tag") or "") + " " + (s.get("desc") or "")).lower() for w in words)]
-        return sorted(rows, key=lambda s: s["added"], reverse=True)
+        return sorted(rows, key=lambda s: (s.get("stars", 0), s["added"]), reverse=True)
 
     def file_path(self, sid):
         p = os.path.join(LIB, f"{re.sub('[^0-9a-f]', '', sid)}.litematic")
