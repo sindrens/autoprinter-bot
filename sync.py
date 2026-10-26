@@ -123,17 +123,29 @@ def check_outbox():
         os.replace(folder, os.path.join(done, d))
 
 
+def is_jdk25(home):
+    """A JDK 25 home: bin/java there, and its release file says 25."""
+    try:
+        if not home or not os.path.exists(os.path.join(home, "bin", "java")):
+            return False
+        return 'JAVA_VERSION="25' in open(os.path.join(home, "release")).read()
+    except OSError:
+        return False
+
+
 def find_jdk():
     """JDK 25 for the build: an installed one, else a copy of Eclipse Temurin 25 in .jdk (downloaded once)."""
+    # java_home falls back to the default Java (8 on this Mac) when there's no 25, so the version is checked
     try:
-        home = subprocess.run(["/usr/libexec/java_home", "-v", "25"], capture_output=True, text=True).stdout.strip()
-        if home and os.path.exists(os.path.join(home, "bin", "java")):
+        r = subprocess.run(["/usr/libexec/java_home", "-v", "25"], capture_output=True, text=True)
+        home = r.stdout.strip()
+        if r.returncode == 0 and is_jdk25(home):
             return home
     except OSError:
         pass
-    found = glob.glob(os.path.join(JDK_DIR, "*", "Contents", "Home")) + glob.glob(os.path.join(JDK_DIR, "*", "bin", "..")) 
+    found = glob.glob(os.path.join(JDK_DIR, "*", "Contents", "Home")) + glob.glob(os.path.join(JDK_DIR, "*"))
     for home in found:
-        if os.path.exists(os.path.join(home, "bin", "java")):
+        if is_jdk25(home):
             return os.path.abspath(home)
     arch = "aarch64" if os.uname().machine in ("arm64", "aarch64") else "x64"
     osname = "mac" if sys.platform == "darwin" else "linux"
@@ -141,7 +153,8 @@ def find_jdk():
     log("downloading JDK 25 for the builds...")
     os.makedirs(JDK_DIR, exist_ok=True)
     tgz = os.path.join(JDK_DIR, "jdk.tar.gz")
-    urllib.request.urlretrieve(url, tgz)
+    # curl (follows the redirect to GitHub; the API answered Python's own downloader with 403 Forbidden)
+    subprocess.run(["curl", "-fsSL", "-A", "autoprinter-sync", "-o", tgz, url], check=True, timeout=900)
     subprocess.run(["tar", "xzf", tgz, "-C", JDK_DIR], check=True)
     os.remove(tgz)
     return find_jdk()
