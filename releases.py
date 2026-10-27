@@ -1,6 +1,6 @@
 """Automatic releases: when the mod repo has a new version (gradle.properties), its jar is built and CHANGELOG.md has
 a section for it, the bot posts it: release card + changelog, the jar in #downloads (the old one moves to
-#old-versions), a short note in #general and a ping for the Updates role. Writing the changelog section is the trigger."""
+#old-versions) and a ping for the Updates role. Writing the changelog section is the trigger."""
 import asyncio
 import datetime as dt
 import hashlib
@@ -303,13 +303,7 @@ class Releases(commands.Cog):
         else:
             m = await ch("downloads").fetch_message(posted["downloads"][-1])
 
-        # 3. a short note in #general
-        g = ch("general")
-        if g and "general" not in done:
-            step_done("general")
-            await g.send(embed=discord.Embed(color=BRAND, description=(
-                f"📢 **Printer Addon {version} is out!**\n{lines[0]}" + (f" (+{len(lines) - 1} more)" if len(lines) > 1 else "")
-                + f"\nWhat's new: {cl_msg.jump_url} · Download: {ch('downloads').mention}")))
+        # 3. no note in #general any more: it flooded the chat (the changelog channel pings the Updates role)
 
         # 4. remembered: linked games show "update available", the bot's status shows it
         DATA["release"] = {"version": version, "date": date, "notes": "\n".join(lines)[:1500], "url": m.jump_url, "sha256": sha}
