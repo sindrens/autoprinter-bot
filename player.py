@@ -80,6 +80,7 @@ ALERTS = {  # event type -> (emoji, title, ping the owner?)
     "custom": ("💬", "Message from the game", False),
     "collectors_sold": ("💰", "Collectors sold (AutoSell)", False),
     "collectors_problem": ("⚠️", "AutoSell stopped", True),
+    "collectors_paid": ("💸", "Collector money paid on (AutoSell)", False),
     "layer_cost": ("💸", "A layer cost more than usual", True),
     "schedule": ("⏰", "Stopped on schedule", False),
 }
@@ -98,7 +99,7 @@ NOTIFY = {  # key: (label, description, default on)
 CATEGORY = {"run_start": "startstop", "stopped": "startstop", "finished": "finished", "kicked": "kicked",
             "rejoined": "rejoined", "stuck": "problems", "no_money": "problems", "no_items": "problems",
             "vault_empty": "problems", "error": "problems", "custom": "problems",
-            "collectors_sold": "selling", "collectors_problem": "problems",
+            "collectors_sold": "selling", "collectors_problem": "problems", "collectors_paid": "selling",
             "layer_cost": "problems", "schedule": "finished"}
 
 
