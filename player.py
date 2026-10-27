@@ -80,6 +80,8 @@ ALERTS = {  # event type -> (emoji, title, ping the owner?)
     "custom": ("💬", "Message from the game", False),
     "collectors_sold": ("💰", "Collectors sold (AutoSell)", False),
     "collectors_problem": ("⚠️", "AutoSell stopped", True),
+    "layer_cost": ("💸", "A layer cost more than usual", True),
+    "schedule": ("⏰", "Stopped on schedule", False),
 }
 # What players can choose to get (in their control room). Less is more: only what needs them is on by default.
 NOTIFY = {  # key: (label, description, default on)
@@ -96,7 +98,8 @@ NOTIFY = {  # key: (label, description, default on)
 CATEGORY = {"run_start": "startstop", "stopped": "startstop", "finished": "finished", "kicked": "kicked",
             "rejoined": "rejoined", "stuck": "problems", "no_money": "problems", "no_items": "problems",
             "vault_empty": "problems", "error": "problems", "custom": "problems",
-            "collectors_sold": "selling", "collectors_problem": "problems"}
+            "collectors_sold": "selling", "collectors_problem": "problems",
+            "layer_cost": "problems", "schedule": "finished"}
 
 
 def wants(p, key):
@@ -139,6 +142,7 @@ HELP = [
         ("/link", "Connect Printer Addon to Discord and get your control room"),
         ("/status", "What your game is doing right now"),
         ("/pause · /resume · /stop", "Control your build from Discord"),
+        ("/schedule", "Stop at a time (07:00) and/or keep money (500k); also ⏰ in your control room"),
         ("/notifications", "Choose what the bot tells you (less is more by default)"),
         ("/logs", "How many logs you've sent (5 = Logger role)"),
         ("/unlink", "Disconnect your game"),
@@ -237,6 +241,64 @@ class PanelView(discord.ui.View):
     @discord.ui.button(label="My stats", emoji="📊", style=discord.ButtonStyle.secondary, custom_id="ctl:stats", row=1)
     async def stats(self, inter, _):
         await inter.response.send_message(embed=self.cog.stats_embed(inter.user), ephemeral=True)
+
+    @discord.ui.button(label="Schedule", emoji="⏰", style=discord.ButtonStyle.secondary, custom_id="ctl:schedule", row=1)
+    async def schedule(self, inter, _):
+        uid = self.cog.owner_of(inter)
+        if not uid or uid != str(inter.user.id):
+            return await inter.response.send_message("Only the owner of this control room can do that.", ephemeral=True)
+        await inter.response.send_modal(ScheduleModal(self.cog, uid))
+
+
+def schedule_spec(stop_at, keep_money):
+    """'07:00', '500k' -> 'schedule:stop_at=07:00;keep_money=500000', or (None, error)."""
+    parts = []
+    if stop_at is not None and stop_at.strip() != "":
+        t = stop_at.strip().replace(".", ":")
+        m = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?", t)
+        if not m or int(m.group(1)) > 23 or (m.group(2) and int(m.group(2)) > 59):
+            return None, "Write the stop time like **07:00** (24-hour clock, your computer's time)."
+        parts.append(f"stop_at={int(m.group(1)):02d}:{int(m.group(2) or 0):02d}")
+    elif stop_at is not None:
+        parts.append("stop_at=")
+    if keep_money is not None and str(keep_money).strip() != "":
+        k = str(keep_money).strip().lower().replace(",", "").replace("$", "").replace(" ", "")
+        mult = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}.get(k[-1:], 1)
+        try:
+            n = int(float(k[:-1] if mult > 1 else k) * mult)
+        except ValueError:
+            return None, "Write the money to keep like **500000**, **500k** or **2m**."
+        parts.append(f"keep_money={max(0, n)}")
+    elif keep_money is not None:
+        parts.append("keep_money=0")
+    if not parts:
+        return None, "Nothing to set."
+    return "schedule:" + ";".join(parts), None
+
+
+class ScheduleModal(discord.ui.Modal, title="Schedule"):
+    stop_at = discord.ui.TextInput(label="Stop at (time of day, empty: no stop time)", placeholder="07:00",
+                                   required=False, max_length=5)
+    keep_money = discord.ui.TextInput(label="Keep at least this much money (0: no limit)", placeholder="500k",
+                                      required=False, max_length=15)
+
+    def __init__(self, cog, uid):
+        super().__init__()
+        self.cog, self.uid = cog, uid
+        st = (DATA["players"][uid].get("status") or {}).get("schedule", "")
+        m = re.search(r"stops at (\d\d:\d\d)", st)
+        if m:
+            self.stop_at.default = m.group(1)
+        m = re.search(r"keeps \$([\d,]+)", st)
+        if m:
+            self.keep_money.default = m.group(1).replace(",", "")
+
+    async def on_submit(self, inter):
+        spec, err = schedule_spec(self.stop_at.value, self.keep_money.value)
+        if err:
+            return await inter.response.send_message(err, ephemeral=True)
+        self.cog.queue(self.uid, spec)
+        await inter.response.send_message("⏰ Schedule sent. Your game confirms it in a few seconds.", ephemeral=True)
 
 
 class NotifySelect(discord.ui.Select):
@@ -458,6 +520,16 @@ class Player(commands.Cog):
             e.add_field(name="Placed this run", value=fmt_num(st["blocks_placed"]))
         if st.get("money_spent"):
             e.add_field(name="Spent this run", value=fmt_num(st["money_spent"]))
+        if st.get("per_min") and state in ("building",):
+            e.add_field(name="Speed", value=f"{fmt_num(st['per_min'])} blocks/min")
+        if st.get("spent_per_hour") and state in ("building",):
+            e.add_field(name="Spending", value=f"{fmt_num(st['spent_per_hour'])} /hour")
+        if st.get("layer_text") and state in ("building",):
+            e.add_field(name="Now", value=esc(st["layer_text"])[:100])
+        if st.get("kind"):
+            e.add_field(name="Build type", value=esc(st["kind"])[:100])
+        if st.get("schedule"):
+            e.add_field(name="⏰ Schedule", value=esc(st["schedule"])[:100])
         if st.get("server"):
             e.add_field(name="Server", value=esc(st["server"]))
         n_on = sum(1 for k in NOTIFY if wants(p, k))
@@ -656,6 +728,28 @@ class Player(commands.Cog):
     async def stop(self, inter: discord.Interaction):
         await self.control(inter, "stop", from_command=True)
 
+    @app_commands.command(description="Stop your build at a time, and/or keep money in the bank")
+    @app_commands.describe(stop_at="Time of day to stop, like 07:00 (your computer's clock). Empty: no change",
+                           keep_money="Never spend below this, like 500k or 2m. 0: no limit",
+                           clear="Remove the stop time and the money limit")
+    async def schedule(self, inter: discord.Interaction, stop_at: str = None, keep_money: str = None, clear: bool = False):
+        uid = str(inter.user.id)
+        if not player_of(uid):
+            return await inter.response.send_message("Link your game first with **/link**.", ephemeral=True)
+        p = DATA["players"][uid]
+        if now() - p.get("last_seen", 0) > OFFLINE_AFTER:
+            return await inter.response.send_message(
+                "⚫ Your game is offline, so it can't get this right now. Start Minecraft and try again.", ephemeral=True)
+        if clear:
+            spec, err = "schedule:clear", None
+        else:
+            spec, err = schedule_spec(stop_at, keep_money)
+        if err:
+            return await inter.response.send_message(err, ephemeral=True)
+        self.queue(uid, spec)
+        await inter.response.send_message("⏰ Schedule sent. Your game confirms it in a few seconds (in your control room).",
+                                          ephemeral=True)
+
     @app_commands.command(description="Choose which notifications you get")
     async def notifications(self, inter: discord.Interaction):
         await self.notify_settings(inter)
@@ -852,7 +946,8 @@ class Player(commands.Cog):
             return web.json_response({"ok": True, "throttled": True})
         self.last_status_at[uid] = time.time()
         keep = {"state": str, "detail": str, "build": str, "progress": float, "layer": int, "layers": int,
-                "eta_s": int, "blocks_placed": int, "money_spent": int, "version": str, "server": str}
+                "eta_s": int, "blocks_placed": int, "money_spent": int, "version": str, "server": str,
+                "layer_text": str, "per_min": int, "spent_per_hour": int, "schedule": str, "kind": str}
         st = {}
         for k, t in keep.items():
             if b.get(k) is not None:
