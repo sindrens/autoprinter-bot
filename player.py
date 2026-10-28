@@ -486,7 +486,7 @@ class Player(commands.Cog):
             guild.get_role(int(ROLE["developer"])): discord.PermissionOverwrite(view_channel=True),
             guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, embed_links=True),
         }
-        name = f"🎮・{mc.lower()}"
+        name = f"{mc.lower()}"
         c = guild.get_channel(int(p["channel"])) if p.get("channel") else None
         if c:
             await c.edit(name=name, overwrites=overwrites)
@@ -855,7 +855,7 @@ class Player(commands.Cog):
     async def loop_counter(self):
         c = ch("stat_blocks")
         if c:
-            name = f"🧱 Blocks printed: {fmt_num(DATA['global'].get('blocks', 0))}"
+            name = f"Blocks printed: {fmt_num(DATA['global'].get('blocks', 0))}"
             if c.name != name:
                 await c.edit(name=name)
 
